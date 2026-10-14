@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#191c19">
+<title>Face Translator</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Martian+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <section class="panel top" id="panel-1" aria-label="Interlocutore"></section>
+  <div id="bar">
+    <button id="swap" type="button" aria-label="Scambia le lingue">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M7 4L3 8M7 4l4 4M17 20V4M17 20l-4-4M17 20l4-4"/></svg>
+    </button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <span id="serial" title="Matricola di questo dispositivo"></span>
+  </div>
+  <section class="panel bottom" id="panel-0" aria-label="Tu"></section>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

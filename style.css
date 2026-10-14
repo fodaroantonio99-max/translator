@@ -1,0 +1,143 @@
+/* CONSOLE DA CABINA DI INTERPRETARIATO
+   Due postazioni in plastica opaca una di fronte all'altra, unite da una cerniera scura.
+   Ogni postazione: finestra a LED con il canale della lingua, testo tradotto stampato sul guscio,
+   tracciato della conversazione, tasto rosso «parla» con spia «in onda» e indicatore di livello.
+   Unicità: matricola e colore dei LED nascono da un seme casuale del dispositivo; il tracciato
+   è generato dalle parole dette, dall'ora e da quel seme, quindi non si ripete mai. */
+:root {
+  color-scheme: light;
+  --case-b: #cfd1ca;           /* guscio postazione in basso */
+  --case-a: #c3cbc4;           /* guscio postazione in alto, più freddo */
+  --ink: #1c201c;              /* serigrafia */
+  --ink-dim: rgba(28, 32, 28, .56);
+  --ink-faint: rgba(28, 32, 28, .2);
+  --hinge: #191c19;            /* cerniera centrale */
+  --led-bg: #10140f;           /* finestra display */
+  --led: #a8f26b;              /* colore LED: sostituito dal seme del dispositivo */
+  --signal: #d7341d;           /* tasto parla */
+  --signal-deep: #8c1f0f;
+  --tally: #ff3b1f;
+  --warn: #ffcf5a;
+  --field: #eceee8;
+  --sans: "Archivo", "Arial Narrow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+html, body { margin: 0; height: 100%; background: var(--hinge); color: var(--ink); font-family: var(--sans); overflow: hidden; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; }
+#app { height: 100dvh; display: flex; flex-direction: column; }
+
+/* --- Postazione ---------------------------------------------------------- */
+.panel { --case: var(--case-b);
+  flex: 1 1 0; min-height: 0; transition: flex-grow .25s ease; display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 18px calc(16px + env(safe-area-inset-bottom));
+  background: var(--grain), linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,0) 40%), var(--case);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 -2px 0 rgba(0,0,0,.08); }
+/* Metà superiore capovolta: il suo "basso" visivo è in alto, quindi l'inset va in fondo */
+.panel.top { --case: var(--case-a); transform: rotate(180deg); padding-bottom: calc(16px + env(safe-area-inset-top)); }
+
+/* Finestra del canale: un display LED incassato; il menu nativo è sovrapposto e invisibile */
+.head { display: flex; align-items: center; gap: 12px; }
+.led-window { position: relative; display: flex; align-items: baseline; gap: 10px; min-width: 0; max-width: 78%;
+  padding: 9px 14px 8px; border-radius: 6px; background: var(--led-bg); color: var(--led);
+  font: 500 13px/1 var(--mono); letter-spacing: .04em;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.55);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--led) 55%, transparent); }
+.led-window .ch { opacity: .55; }
+.led-window .code { font-weight: 600; }
+.led-window .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.led-window .caret { margin-left: 2px; opacity: .7; }
+.led-window select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
+  -webkit-appearance: none; appearance: none; font-size: 16px; color: var(--led); background-color: var(--led-bg); border: 0; }
+.led-window select option { color: #111; background: #fff; }
+.led-window:has(select:disabled) { opacity: .55; }
+.led-window:has(select:focus-visible) { outline: 2px solid var(--ink); outline-offset: 3px; }
+.plate { margin-left: auto; font: 600 10px/1.2 var(--sans); font-stretch: 75%; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-dim); text-align: right; }
+
+/* Testo tradotto: serigrafato grande sul guscio */
+.stage { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.caption { display: flex; align-items: center; gap: 8px; font: 700 11px/1 var(--sans); font-stretch: 75%;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim); min-height: 13px; }
+.caption[hidden] { display: none; }
+.engine { letter-spacing: .1em; }
+.engine:empty { display: none; }
+.wave { display: none; gap: 3px; align-items: flex-end; height: 11px; }
+.wave i { width: 3px; background: var(--signal); border-radius: 1px; animation: wave .9s ease-in-out infinite; }
+.wave i:nth-child(2) { animation-delay: .15s; } .wave i:nth-child(3) { animation-delay: .3s; }
+.panel.speaking .wave { display: inline-flex; }
+@keyframes wave { 0%, 100% { height: 3px; } 50% { height: 11px; } }
+
+.received { flex: 1; min-height: 0; overflow-y: auto; font-family: var(--sans); font-weight: 680; font-stretch: 108%;
+  font-size: 34px; line-height: 1.15; letter-spacing: -.012em; word-break: break-word; cursor: pointer;
+  text-wrap: pretty; -webkit-user-select: text; user-select: text; }
+.received.empty { display: none; }
+.hint { flex: 1; font: 600 21px/1.25 var(--sans); font-stretch: 88%; color: var(--ink-dim); }
+.hint[hidden] { display: none; }
+
+/* Tracciato della conversazione */
+.trace { display: block; width: 100%; height: 30px; border-top: 1px solid var(--ink-faint); border-bottom: 1px solid var(--ink-faint); }
+
+/* Piede: ingresso (ciò che ho detto), indicatore di livello, tasto */
+.foot { display: flex; align-items: flex-end; gap: 14px; }
+.in { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.in-label { font: 700 10px/1 var(--sans); font-stretch: 75%; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim); }
+.heard { font: 400 12px/1.45 var(--mono); color: var(--ink); min-height: 1.45em;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+.meter { flex: none; display: flex; flex-direction: column-reverse; gap: 2px; padding: 4px; border-radius: 4px;
+  background: var(--led-bg); box-shadow: inset 0 2px 4px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.5); }
+.meter i { display: block; width: 10px; height: 4px; border-radius: 1px; background: color-mix(in srgb, var(--led) 14%, #1d231c); }
+.meter i.on { background: var(--led); box-shadow: 0 0 5px var(--led); }
+.meter i:nth-child(n+9).on { background: var(--warn); box-shadow: 0 0 5px var(--warn); }
+.meter i:nth-child(n+11).on { background: var(--tally); box-shadow: 0 0 5px var(--tally); }
+
+.key { flex: none; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+.tally { width: 9px; height: 9px; border-radius: 50%; background: #6b2a20; box-shadow: inset 0 1px 1px rgba(0,0,0,.5); }
+.panel.on-air .tally { background: var(--tally); box-shadow: 0 0 10px var(--tally), 0 0 2px #fff inset; }
+.mic { position: relative; width: 78px; height: 72px; border-radius: 18px; border: 0; cursor: pointer;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--signal) 82%, #fff), var(--signal) 45%);
+  color: #fff7f2; display: grid; place-items: center;
+  box-shadow: 0 6px 0 var(--signal-deep), 0 10px 18px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.35);
+  transition: transform .08s ease, box-shadow .08s ease, opacity .2s ease; }
+.mic svg { width: 30px; height: 30px; }
+.mic:active, .mic.listening { transform: translateY(4px);
+  box-shadow: 0 2px 0 var(--signal-deep), 0 4px 8px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.25); }
+.mic:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+.mic:disabled { opacity: .35; cursor: default; }
+.key-label { margin-top: 6px; font: 700 10px/1 var(--sans); font-stretch: 75%; letter-spacing: .2em; text-transform: uppercase; color: var(--ink-dim); }
+.panel.on-air .key-label { color: var(--signal); }
+
+/* Dettatura da tastiera (Chrome su iPhone e browser senza riconoscimento vocale): una telescrivente */
+.typed { display: flex; gap: 8px; }
+.typed[hidden] { display: none; }
+.typed input { flex: 1; min-width: 0; font: 15px var(--mono); color: var(--ink); padding: 12px 12px;
+  border-radius: 8px; border: 1px solid var(--ink-faint); background: var(--field);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.12); -webkit-user-select: text; user-select: text; }
+.typed input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.typed button { flex: none; width: 50px; border: 0; border-radius: 10px; background: var(--signal); color: #fff7f2;
+  display: grid; place-items: center; cursor: pointer; box-shadow: 0 3px 0 var(--signal-deep); }
+.typed button svg { width: 22px; height: 22px; }
+
+/* --- Cerniera centrale --------------------------------------------------- */
+#bar { flex: none; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 12px;
+  background: var(--hinge); color: #e9ece4;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(255,255,255,.04); }
+#swap { flex: none; width: 34px; height: 30px; border-radius: 6px; border: 1px solid rgba(255,255,255,.18);
+  background: #262a26; color: #e9ece4; display: grid; place-items: center; cursor: pointer; }
+#swap svg { width: 17px; height: 17px; }
+#swap:disabled { opacity: .3; }
+#status { flex: 1; min-width: 0; text-align: center; font: 500 11px/1.35 var(--mono); color: var(--warn);
+  display: flex; align-items: center; justify-content: center; gap: 8px; }
+#status.busy { color: var(--led); }
+.spinner { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--led);
+  border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#serial { flex: none; font: 500 9px/1.2 var(--mono); letter-spacing: .08em; color: rgba(233,236,228,.45); text-align: right; white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel { transition: none; }
+  .wave i, .spinner { animation: none; }
+  .mic { transition: none; }
+}
