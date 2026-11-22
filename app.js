@@ -78,6 +78,62 @@ function saveLangs() {
 }
 
 // ---------------------------------------------------------------------------
+// STORICO: le ultime frasi tradotte, salvate solo su questo telefono
+const HISTORY_MAX = 200;
+let convoLog = [];
+try { convoLog = JSON.parse(localStorage.getItem('ft-history') || '[]'); if (!Array.isArray(convoLog)) convoLog = []; } catch (_) { convoLog = []; }
+function saveHistory() { try { localStorage.setItem('ft-history', JSON.stringify(convoLog)); } catch (_) {} }
+function addHistory(from, to, text, out) {
+  convoLog.push({ t: Date.now(), from: sides[from].lang.code, to: sides[to].lang.code, text, out });
+  if (convoLog.length > HISTORY_MAX) convoLog.splice(0, convoLog.length - HISTORY_MAX);
+  saveHistory();
+  if (!histEl.hidden) renderHistory();
+}
+
+const histEl = document.getElementById('history'), histList = document.getElementById('hist-list');
+const histBtn = document.getElementById('hist-btn'), histClear = document.getElementById('hist-clear');
+let clearArmed = 0;
+function renderHistory() {
+  histList.textContent = '';
+  if (!convoLog.length) {
+    const d = document.createElement('div'); d.className = 'h-empty';
+    d.textContent = 'Nessuna frase ancora. Le traduzioni appaiono qui.';
+    histList.appendChild(d); return;
+  }
+  const fmt = new Intl.DateTimeFormat('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  for (let k = convoLog.length - 1; k >= 0; k--) {          // dalla più recente
+    const h = convoLog[k];
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'h-item';
+    const meta = document.createElement('span'); meta.className = 'h-meta';
+    meta.textContent = fmt.format(new Date(h.t)) + ' · ' + h.from.split('-')[0].toUpperCase() + ' → ' + h.to.split('-')[0].toUpperCase() + ' · tocca per riascoltare';
+    const a = document.createElement('span'); a.className = 'h-from'; a.textContent = h.text;
+    const o = document.createElement('span'); o.className = 'h-to'; o.textContent = h.out;
+    b.append(meta, a, o);
+    b.addEventListener('click', () => {
+      if (state !== 'idle') return;
+      unlockTTS();
+      const id = ++runId; message = ''; setState('speaking');
+      speak(h.out, byCode(h.to), null, id).then(() => { if (id === runId) releaseAudio().then(() => { if (id === runId) setState('idle'); }); });
+    });
+    histList.appendChild(b);
+  }
+}
+function openHistory() { renderHistory(); histEl.hidden = false; histBtn.setAttribute('aria-expanded', 'true'); histList.scrollTop = 0; }
+function closeHistory() { histEl.hidden = true; histBtn.setAttribute('aria-expanded', 'false'); disarmClear(); }
+function disarmClear() { clearTimeout(clearArmed); clearArmed = 0; histClear.classList.remove('armed'); histClear.textContent = 'Cancella tutto'; }
+histBtn.addEventListener('click', openHistory);
+document.getElementById('hist-close').addEventListener('click', closeHistory);
+histClear.addEventListener('click', () => {
+  if (!convoLog.length) return;
+  if (!clearArmed) {                       // primo tocco: chiede conferma nella pagina
+    histClear.classList.add('armed'); histClear.textContent = 'Tocca per confermare';
+    clearArmed = setTimeout(disarmClear, 4000); return;
+  }
+  convoLog = []; saveHistory(); disarmClear(); renderHistory();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !histEl.hidden) closeHistory(); });
+
+// ---------------------------------------------------------------------------
 // UI
 const els = [];
 function buildPanel(i) {
@@ -466,6 +522,7 @@ async function handleText(from, text) {
   focusSide = to;
   addTrace(from, text);
   addTrace(to, out);
+  addHistory(from, to, text, out);
   message = '';
   speakingSide = to;
   setState('speaking');
