@@ -330,7 +330,9 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
 
 // ---------------------------------------------------------------------------
 // MICROFONO (Web Speech API)
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// Su iPhone il riconoscimento vocale del browser toglie l'audio alla voce e il microfono si blocca alla seconda volta:
+// lì si detta con il microfono 🎤 della tastiera (che non ha questo problema) e la voce resta affidabile.
+const SR = IS_IOS ? null : (window.SpeechRecognition || window.webkitSpeechRecognition);
 
 const ERR_MSG = {
   'not-allowed':          'Permesso microfono negato: abilitalo nelle impostazioni del browser.',
