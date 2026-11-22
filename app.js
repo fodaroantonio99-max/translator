@@ -408,7 +408,7 @@ function startListening(i) {
   };
   stopRec = forceStop;
 
-  r.onaudiostart = () => { gotAudio = true; };
+  r.onaudiostart = r.onsoundstart = r.onspeechstart = () => { gotAudio = true; };
   r.onspeechend = () => { armRecTimer(forceStop, 2500); };
   r.onresult = (e) => {
     let interim = '';
@@ -416,6 +416,7 @@ function startListening(i) {
       const res = e.results[k];
       if (res.isFinal) finalText += res[0].transcript; else interim += res[0].transcript;
     }
+    gotAudio = true;
     sides[i].heard = (finalText + ' ' + interim).trim();
     bump(i, .45 + Math.random() * .5);
     render();
@@ -424,7 +425,7 @@ function startListening(i) {
   r.onend = finish;
 
   try { r.start(); } catch (err) { finished = true; rec = null; stopRec = null; message = 'Impossibile avviare il microfono.'; setState('idle'); return; }
-  armRecTimer(() => { if (!gotAudio) { lastError = 'audio-capture'; try { r.abort(); } catch (_) {} finish(); } }, 7000);  // il microfono non parte
+  armRecTimer(() => { if (!gotAudio) { lastError = 'audio-capture'; try { r.abort(); } catch (_) {} finish(); } }, 10000);  // il microfono non parte
   armRecTimer(forceStop, 30000);                                                                                              // frase troppo lunga
   render();
 }
@@ -469,6 +470,8 @@ async function handleText(from, text) {
   const ok = await speak(out, sides[to].lang, to, id);
   if (id !== runId) return;
   if (!ok && !message) message = 'Audio non partito: tocca il testo per riascoltare.';
+  await releaseAudio();
+  if (id !== runId) return;
   setState('idle');
 }
 
@@ -481,7 +484,7 @@ function replay(i) {
   speak(sides[i].received, sides[i].lang, i, id).then((ok) => {
     if (id !== runId) return;
     if (!ok && !message) message = 'Audio non partito: controlla il volume e riprova.';
-    setState('idle');
+    releaseAudio().then(() => { if (id === runId) setState('idle'); });
   });
 }
 
@@ -668,6 +671,13 @@ function speakChunk(text, lang, voice, side) {
       speechSynthesis.speak(u);
     } catch (_) { done(false); }
   });
+}
+
+// Finita la voce, iOS tiene ancora l'audio in riproduzione e il microfono successivo "non sente":
+// si libera la sessione audio e si aspetta un attimo prima di riattivare il tasto
+async function releaseAudio() {
+  cancelSpeech();
+  if (IS_IOS) await sleep(900);
 }
 
 async function speak(text, lang, side, id) {
