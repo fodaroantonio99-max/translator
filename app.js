@@ -57,6 +57,17 @@ let focusSide = null;      // chi deve leggere l'ultima traduzione: la sua metà
 let message = '';
 let rec = null;            // istanza SpeechRecognition corrente
 let ttsUnlocked = false;
+let runId = 0;             // cambia a ogni avvio/reset: i risultati asincroni vecchi vengono scartati
+let stateTimer = 0;        // paracadute: se uno stato resta appeso, si torna a "idle"
+let lastRecEnd = 0;        // quando il microfono ha smesso: Android ha bisogno di una pausa prima della voce
+let stopRec = null;        // ferma (con paracadute) l'ascolto in corso
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function withTimeout(p, ms, msg) {
+  let timer;
+  return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(msg)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
 
 try {
   const saved = JSON.parse(localStorage.getItem('ft-langs') || 'null');
@@ -151,15 +162,23 @@ function fitText(el) {
 function layoutPanels() {
   // chi deve leggere ottiene circa due terzi dello schermo
   const grow = focusSide == null ? [1, 1] : (focusSide === 0 ? [1.8, 1] : [1, 1.8]);
-  els.forEach((e, i) => { e.root.style.flexGrow = String(grow[i]); });
+  let changed = false;
+  els.forEach((e, i) => {
+    if (e.root.style.flexGrow !== String(grow[i])) { e.root.style.flexGrow = String(grow[i]); changed = true; }
+  });
   els.forEach(e => fitText(e.received));
+  if (changed) { drawTrace(0); drawTrace(1); }
 }
 
 function render() {
   const statusEl = document.getElementById('status');
-  statusEl.className = (state === 'translating') ? 'busy' : '';
-  statusEl.innerHTML = (state === 'translating' ? '<span class="spinner"></span>' : '') + '<span></span>';
-  statusEl.lastChild.textContent = message;
+  const statusKey = state + '|' + message;
+  if (statusEl.dataset.k !== statusKey) {
+    statusEl.dataset.k = statusKey;
+    statusEl.className = (state === 'translating') ? 'busy' : '';
+    statusEl.innerHTML = (state === 'translating' ? '<span class="spinner"></span>' : '') + '<span></span>';
+    statusEl.lastChild.textContent = message;
+  }
   document.getElementById('swap').disabled = state !== 'idle';
 
   sides.forEach((s, i) => {
@@ -190,8 +209,31 @@ function render() {
   });
   layoutPanels();
 }
-function setState(s) { state = s; if (s === 'idle') { activeSide = null; speakingSide = null; } render(); }
+const STATE_LIMITS = { listening: 40000, translating: 40000, speaking: 90000 };
+function setState(s) {
+  state = s;
+  clearTimeout(stateTimer);
+  if (s === 'idle') { activeSide = null; speakingSide = null; }
+  else stateTimer = setTimeout(() => { message = 'Operazione bloccata: riprova.'; hardReset(); }, STATE_LIMITS[s]);
+  render();
+}
 function setMsg(m) { message = m; render(); }
+
+// Riporta tutto a riposo: ferma microfono e voce e scarta i risultati in arrivo.
+// Serve quando Chrome (soprattutto su Android) non manda più gli eventi "onend" e l'app resterebbe bloccata.
+function hardReset() {
+  runId++;
+  clearTimeout(stateTimer);
+  stopRec = null;
+  try { rec && rec.abort(); } catch (_) {}
+  rec = null;
+  cancelSpeech();
+  setState('idle');
+}
+// Toccando la barra di stato mentre l'app è occupata si annulla tutto
+document.getElementById('status').addEventListener('click', () => {
+  if (state !== 'idle') { message = ''; hardReset(); }
+});
 
 // Scambia le lingue delle due persone
 document.getElementById('swap').addEventListener('click', () => {
@@ -280,9 +322,11 @@ function drawTrace(i) {
   }
 }
 window.addEventListener('resize', () => { drawTrace(0); drawTrace(1); layoutPanels(); });
-document.querySelectorAll('.panel').forEach(el => el.addEventListener('transitionend', (ev) => {
-  if (ev.propertyName === 'flex-grow') { els.forEach(e => fitText(e.received)); drawTrace(0); drawTrace(1); }
-}));
+// Quando il font web arriva le misure cambiano: si ricalcola la dimensione del testo
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
+  els.forEach(e => { e.received.dataset.fit = ''; });
+  layoutPanels(); drawTrace(0); drawTrace(1);
+}).catch(() => {});
 
 // ---------------------------------------------------------------------------
 // MICROFONO (Web Speech API)
@@ -310,20 +354,28 @@ function openTyping(i) {
 
 function onMic(i) {
   if (!SR) { openTyping(i); return; }
-  if (state === 'listening' && activeSide === i) { try { rec && rec.stop(); } catch (_) {} return; }
+  if (state === 'listening' && activeSide === i) { if (stopRec) stopRec(); return; }
   if (state !== 'idle') return;
   startListening(i);
 }
 
+// Timer del riconoscimento: se Chrome non manda "onend" non restiamo appesi
+let recTimers = [];
+function clearRecTimers() { recTimers.forEach(clearTimeout); recTimers = []; }
+function armRecTimer(fn, ms) { recTimers.push(setTimeout(fn, ms)); }
+
 function startListening(i) {
   unlockTTS();                       // deve avvenire dentro il gesto dell'utente (iOS)
-  try { speechSynthesis.cancel(); } catch (_) {}
+  cancelSpeech();
   keepAwake();
+  clearRecTimers();
+  if (rec) { try { rec.abort(); } catch (_) {} rec = null; }
 
+  const myRun = ++runId;
   sides[i].heard = '';
   message = '';
   activeSide = i;
-  state = 'listening';
+  setState('listening');
 
   const r = new SR();
   rec = r;
@@ -332,7 +384,32 @@ function startListening(i) {
   r.continuous = false;
   r.maxAlternatives = 1;
 
-  let finalText = '', lastError = null;
+  let finalText = '', lastError = null, finished = false, gotAudio = false;
+
+  // Chiamata una sola volta, da onend o dai paracadute
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearRecTimers();
+    if (rec === r) rec = null;
+    if (stopRec === forceStop) stopRec = null;
+    if (runId !== myRun || state !== 'listening' || activeSide !== i) return;
+    lastRecEnd = Date.now();
+    const text = (finalText || sides[i].heard || '').trim();
+    if (text) { handleText(i, text); return; }
+    if (lastError && lastError !== 'aborted') message = ERR_MSG[lastError] || ('Errore microfono: ' + lastError);
+    else message = ERR_MSG['no-speech'];
+    setState('idle');
+  };
+  // stop() gentile; se Chrome non risponde entro 3 secondi, abort() e si chiude comunque
+  const forceStop = () => {
+    try { r.stop(); } catch (_) {}
+    armRecTimer(() => { try { r.abort(); } catch (_) {} finish(); }, 3000);
+  };
+  stopRec = forceStop;
+
+  r.onaudiostart = () => { gotAudio = true; };
+  r.onspeechend = () => { armRecTimer(forceStop, 2500); };
   r.onresult = (e) => {
     let interim = '';
     for (let k = e.resultIndex; k < e.results.length; k++) {
@@ -344,43 +421,43 @@ function startListening(i) {
     render();
   };
   r.onerror = (e) => { lastError = e.error; };
-  r.onend = () => {
-    if (rec === r) rec = null;
-    if (state !== 'listening' || activeSide !== i) return;
-    const text = (finalText || sides[i].heard || '').trim();
-    if (text) { handleText(i, text); return; }
-    if (lastError && lastError !== 'aborted') message = ERR_MSG[lastError] || ('Errore microfono: ' + lastError);
-    else message = ERR_MSG['no-speech'];
-    setState('idle');
-  };
+  r.onend = finish;
 
-  try { r.start(); } catch (err) { message = 'Impossibile avviare il microfono.'; setState('idle'); return; }
+  try { r.start(); } catch (err) { finished = true; rec = null; stopRec = null; message = 'Impossibile avviare il microfono.'; setState('idle'); return; }
+  armRecTimer(() => { if (!gotAudio) { lastError = 'audio-capture'; try { r.abort(); } catch (_) {} finish(); } }, 7000);  // il microfono non parte
+  armRecTimer(forceStop, 30000);                                                                                              // frase troppo lunga
   render();
 }
 
-// Ferma l'ascolto se la pagina va in background
+// Se la pagina va in background Chrome può non mandare più gli eventi: si riparte da zero
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    try { rec && rec.abort(); } catch (_) {}
-    try { speechSynthesis.cancel(); } catch (_) {}
-  }
+  if (document.hidden) { message = ''; hardReset(); }
+  else if (wakeWanted) keepAwake();
 });
+window.addEventListener('pagehide', () => {
+  try { rec && rec.abort(); } catch (_) {}
+  cancelSpeech();
+});
+window.addEventListener('pageshow', (e) => { if (e.persisted) { message = ''; hardReset(); } });
 
 // ---------------------------------------------------------------------------
 // FLUSSO: testo riconosciuto -> traduzione -> voce
 async function handleText(from, text) {
+  const id = runId;
   const to = 1 - from;
   setState('translating');
-  message = 'Traduzione…';
+  message = 'Traduzione… (tocca qui per annullare)';
   render();
   let out;
   try {
-    out = await translate(text, sides[from].lang, sides[to].lang);
+    out = await withTimeout(translate(text, sides[from].lang, sides[to].lang), 30000, 'timeout, controlla la connessione');
   } catch (err) {
+    if (id !== runId) return;
     message = 'Traduzione non riuscita: ' + (err && err.message ? err.message : err);
     setState('idle');
     return;
   }
+  if (id !== runId) return;               // annullato nel frattempo
   sides[to].received = out;
   sides[to].engine = lastEngine;
   focusSide = to;
@@ -389,15 +466,23 @@ async function handleText(from, text) {
   message = '';
   speakingSide = to;
   setState('speaking');
-  await speak(out, sides[to].lang, to);
+  const ok = await speak(out, sides[to].lang, to, id);
+  if (id !== runId) return;
+  if (!ok && !message) message = 'Audio non partito: tocca il testo per riascoltare.';
   setState('idle');
 }
 
 function replay(i) {
   if (state !== 'idle' || !sides[i].received) return;
+  const id = ++runId;
+  message = '';
   speakingSide = i;
   setState('speaking');
-  speak(sides[i].received, sides[i].lang, i).then(() => setState('idle'));
+  speak(sides[i].received, sides[i].lang, i, id).then((ok) => {
+    if (id !== runId) return;
+    if (!ok && !message) message = 'Audio non partito: controlla il volume e riprova.';
+    setState('idle');
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +585,7 @@ async function translate(text, from, to) {
     try { const out = await deeplTranslate(text, from, to); lastEngine = 'DeepL'; return out; }
     catch (_) { /* quota esaurita o rete: si passa ai servizi di riserva */ }
   }
-  const native = await nativeTranslate(text, from, to);
+  const native = await withTimeout(nativeTranslate(text, from, to), 8000, 'native').catch(() => null);
   if (native) return native;
   return byChunks(text, API_CHUNK, c => myMemory(c, from, to));
 }
@@ -521,7 +606,7 @@ function pickVoice(lang) {
 
 // iOS consente speak() solo dopo un gesto dell'utente: "sblocchiamo" al primo tocco
 function unlockTTS() {
-  if (ttsUnlocked) return;
+  if (ttsUnlocked || !IS_IOS) return;   // solo iOS ne ha bisogno; su Android lascerebbe la coda della voce incastrata
   try {
     const u = new SpeechSynthesisUtterance(' ');   // uno spazio: iOS ignora le frasi vuote
     u.volume = 0;
@@ -530,36 +615,94 @@ function unlockTTS() {
   } catch (_) {}
 }
 
-function speak(text, lang, side) {
+// Chrome può perdere gli eventi di una frase se l'oggetto viene eliminato dalla memoria: li teniamo qui
+const liveUtterances = new Set();
+function cancelSpeech() {
+  try { speechSynthesis.cancel(); } catch (_) {}
+  liveUtterances.clear();
+}
+
+// Frasi corte (max ~170 caratteri): Chrome smette di parlare in silenzio sui testi lunghi
+function speechChunks(text) {
+  const MAX = 170;
+  const sentences = (text.match(/[^.!?。！？\n]+[.!?。！？]*/g) || [text]).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  for (let s of sentences) {
+    while (s.length > MAX) {
+      let cut = Math.max(s.lastIndexOf(',', MAX), s.lastIndexOf(';', MAX), s.lastIndexOf(' ', MAX));
+      if (cut < MAX / 2) cut = MAX;
+      out.push(s.slice(0, cut + 1).trim());
+      s = s.slice(cut + 1).trim();
+    }
+    if (s) out.push(s);
+  }
+  return out.length ? out : [text];
+}
+
+// Pronuncia una frase. Risolve true se l'audio è partito, false se non è partito o ha dato errore.
+function speakChunk(text, lang, voice, side) {
   return new Promise((resolve) => {
-    if (!('speechSynthesis' in window)) { message = 'Voce non supportata da questo browser.'; render(); return resolve(); }
-    try { speechSynthesis.cancel(); } catch (_) {}
-    loadVoices();
-    const voice = pickVoice(lang);
-    if (!voice && voices.length) { message = 'Voce per ' + lang.name + ' non installata sul dispositivo.'; render(); }
-
-    // frasi separate: evita lo stop silenzioso di Chrome sui testi lunghi
-    const parts = (text.match(/[^.!?。！？]+[.!?。！？]*/g) || [text]).map(s => s.trim()).filter(Boolean);
-    let remaining = parts.length, done = false;
-    const finish = () => { if (done) return; done = true; clearTimeout(guard); resolve(); };
-    const guard = setTimeout(finish, 8000 + text.length * 120);   // paracadute
-
-    parts.forEach((p) => {
-      const u = new SpeechSynthesisUtterance(p);
-      u.lang = lang.tts;
-      if (voice) u.voice = voice;
-      u.rate = 1;
-      u.onend = u.onerror = () => { if (--remaining <= 0) finish(); };
-      // l'indicatore di livello segue le parole pronunciate
-      if (side != null) { u.onstart = () => bump(side, .7); u.onboundary = () => bump(side, .5 + Math.random() * .45); }
+    let started = false, settled = false;
+    const t0 = Date.now();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang.tts; u.volume = 1; u.rate = 1; u.pitch = 1;
+    if (voice) u.voice = voice;
+    liveUtterances.add(u);
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(startGuard); clearTimeout(endGuard);
+      liveUtterances.delete(u);
+      resolve(ok);
+    };
+    // la voce non parte entro 4 secondi: coda incastrata, si rinuncia (il chiamante riprova)
+    const startGuard = setTimeout(() => { if (!started) { try { speechSynthesis.cancel(); } catch (_) {} done(false); } }, 4000);
+    // paracadute sulla fine, se Chrome non manda mai onend
+    const endGuard = setTimeout(() => { try { speechSynthesis.cancel(); } catch (_) {} done(started); }, 8000 + text.length * 150);
+    u.onstart = () => { started = true; clearTimeout(startGuard); if (side != null) bump(side, .7); };
+    u.onboundary = () => { if (side != null) bump(side, .5 + Math.random() * .45); };
+    u.onend = () => done(started || Date.now() - t0 > 400);
+    u.onerror = (e) => done(e && (e.error === 'interrupted' || e.error === 'canceled') ? started : false);
+    try {
+      if (speechSynthesis.paused) speechSynthesis.resume();
       speechSynthesis.speak(u);
-    });
+    } catch (_) { done(false); }
   });
 }
 
+async function speak(text, lang, side, id) {
+  if (!('speechSynthesis' in window)) { message = 'Voce non supportata da questo browser.'; render(); return false; }
+  cancelSpeech();
+  loadVoices();
+  const voice = pickVoice(lang);
+  if (!voice && voices.length) { message = 'Voce per ' + lang.name + ' non installata sul dispositivo.'; render(); }
+
+  // Dopo il microfono Android tiene l'audio in modalità "chiamata" per un attimo (volume basso o muto);
+  // e dopo cancel() Chrome vuole un respiro prima del nuovo speak()
+  await sleep(Math.max(150, 450 - (Date.now() - lastRecEnd)));
+  if (id !== runId) return false;
+  try { speechSynthesis.resume(); } catch (_) {}
+
+  let anyOk = false;
+  for (const chunk of speechChunks(text)) {
+    if (id !== runId) return anyOk;
+    let ok = await speakChunk(chunk, lang, voice, side);
+    if (!ok && id === runId) {         // secondo tentativo, lasciando scegliere la voce al browser
+      cancelSpeech();
+      await sleep(250);
+      if (id !== runId) return anyOk;
+      ok = await speakChunk(chunk, lang, null, side);
+    }
+    if (!ok) return anyOk;             // audio non disponibile: inutile insistere sulle frasi dopo
+    anyOk = true;
+  }
+  return anyOk;
+}
+
 // Tiene lo schermo acceso durante la conversazione
-let wakeLock = null;
+let wakeLock = null, wakeWanted = false;
 async function keepAwake() {
+  wakeWanted = true;
   try { if ('wakeLock' in navigator && !wakeLock) {
     wakeLock = await navigator.wakeLock.request('screen');
     wakeLock.addEventListener('release', () => { wakeLock = null; });
@@ -569,5 +712,6 @@ async function keepAwake() {
 // ---------------------------------------------------------------------------
 buildPanel(0);
 buildPanel(1);
+cancelSpeech();
 render();
 if (!SR) setMsg(TYPING_HINT);
