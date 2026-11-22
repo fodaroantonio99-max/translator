@@ -743,8 +743,10 @@ async function speak(text, lang, side, id) {
   if (!('speechSynthesis' in window)) { message = 'Voce non supportata da questo browser.'; render(); return false; }
   cancelSpeech();
   loadVoices();
-  const voice = pickVoice(lang);
-  if (!voice && voices.length) { message = 'Voce per ' + lang.name + ' non installata sul dispositivo.'; render(); }
+  // iPhone: l'elenco contiene voci Siri/enhanced non scaricate che restano mute senza errore.
+  // Si imposta solo la lingua e iOS usa la sua voce predefinita, che funziona sempre.
+  const voice = IS_IOS ? null : pickVoice(lang);
+  if (!IS_IOS && !voice && voices.length) { message = 'Voce per ' + lang.name + ' non installata sul dispositivo.'; render(); }
 
   // Dopo il microfono Android tiene l'audio in modalità "chiamata" per un attimo (volume basso o muto);
   // e dopo cancel() Chrome vuole un respiro prima del nuovo speak()
