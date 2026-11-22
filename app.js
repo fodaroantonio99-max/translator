@@ -528,7 +528,7 @@ async function handleText(from, text) {
   setState('speaking');
   const ok = await speak(out, sides[to].lang, to, id);
   if (id !== runId) return;
-  if (!ok && !message) message = audioFailMessage();
+  if (!ok && !message) message = 'Audio non partito: tocca il testo per riascoltare.';
   await releaseAudio();
   if (id !== runId) return;
   setState('idle');
@@ -542,7 +542,7 @@ function replay(i) {
   setState('speaking');
   speak(sides[i].received, sides[i].lang, i, id).then((ok) => {
     if (id !== runId) return;
-    if (!ok && !message) message = audioFailMessage();
+    if (!ok && !message) message = 'Audio non partito: controlla il volume e riprova.';
     releaseAudio().then(() => { if (id === runId) setState('idle'); });
   });
 }
@@ -679,10 +679,8 @@ function unlockTTS() {
 
 // Chrome può perdere gli eventi di una frase se l'oggetto viene eliminato dalla memoria: li teniamo qui
 const liveUtterances = new Set();
-let lastSpeechError = '';
-// cancel() solo se c'è davvero qualcosa in coda: su iOS un cancel a vuoto può far perdere il speak() successivo
 function cancelSpeech() {
-  try { if (speechSynthesis.speaking || speechSynthesis.pending || speechSynthesis.paused) speechSynthesis.cancel(); } catch (_) {}
+  try { speechSynthesis.cancel(); } catch (_) {}
   liveUtterances.clear();
 }
 
@@ -726,7 +724,7 @@ function speakChunk(text, lang, voice, side) {
     u.onstart = () => { started = true; clearTimeout(startGuard); if (side != null) bump(side, .7); };
     u.onboundary = () => { if (side != null) bump(side, .5 + Math.random() * .45); };
     u.onend = () => done(started || Date.now() - t0 > 400);
-    u.onerror = (e) => { if (e && e.error && e.error !== 'interrupted' && e.error !== 'canceled') lastSpeechError = e.error; done(e && (e.error === 'interrupted' || e.error === 'canceled') ? started : false); };
+    u.onerror = (e) => done(e && (e.error === 'interrupted' || e.error === 'canceled') ? started : false);
     try {
       if (speechSynthesis.paused) speechSynthesis.resume();
       speechSynthesis.speak(u);
@@ -741,15 +739,7 @@ async function releaseAudio() {
   if (IS_IOS) await sleep(900);
 }
 
-function audioFailMessage() {
-  let m = 'Audio non partito';
-  if (lastSpeechError) m += ' (' + lastSpeechError + ')';
-  m += IS_IOS ? ": controlla che l'interruttore del silenzioso sia spento e alza il volume. Poi tocca il testo." : ': tocca il testo per riascoltare.';
-  return m;
-}
-
 async function speak(text, lang, side, id) {
-  lastSpeechError = '';
   if (!('speechSynthesis' in window)) { message = 'Voce non supportata da questo browser.'; render(); return false; }
   cancelSpeech();
   loadVoices();
